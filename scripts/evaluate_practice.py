@@ -19,6 +19,7 @@ Ví dụ:
 from __future__ import annotations
 
 import argparse
+import configparser
 import json
 import shutil
 import subprocess
@@ -39,7 +40,7 @@ def _patch_numpy_aliases() -> None:
 
 
 def _load_eval_config(lab_data_root: Path) -> dict:
-    """Đọc cấu hình chấm đi kèm nhãn video luyện.
+    """Đọc cấu hình chấm hoặc suy ra từ metadata video luyện.
 
     Args:
         lab_data_root: Thư mục lab_data giảng viên phát.
@@ -48,15 +49,27 @@ def _load_eval_config(lab_data_root: Path) -> dict:
         Dict có khóa ``benchmark`` và có thể có ``split``.
 
     Raises:
-        FileNotFoundError: Khi thiếu ``video_1/eval_config.json``.
+        FileNotFoundError: Khi thiếu cả file cấu hình và ``seqinfo.ini``.
+        ValueError: Khi ``seqinfo.ini`` không có tên benchmark.
     """
     config_path = lab_data_root / PRACTICE_VIDEO / "eval_config.json"
-    if not config_path.exists():
+    if config_path.exists():
+        return json.loads(config_path.read_text())
+
+    seqinfo_path = lab_data_root / PRACTICE_VIDEO / "seqinfo.ini"
+    if not seqinfo_path.exists():
         raise FileNotFoundError(
-            f"Không thấy {config_path}. Dùng đúng gói lab_data giảng viên phát "
-            "(file này đi kèm nhãn của video luyện)."
+            f"Không thấy {config_path} hoặc {seqinfo_path}. "
+            "Dùng đúng gói lab_data giảng viên phát."
         )
-    return json.loads(config_path.read_text())
+
+    seqinfo = configparser.ConfigParser()
+    seqinfo.read(seqinfo_path, encoding="utf-8")
+    sequence_name = seqinfo.get("Sequence", "name", fallback="").strip()
+    benchmark = sequence_name.partition("-")[0]
+    if not benchmark:
+        raise ValueError(f"Không suy ra được benchmark từ {seqinfo_path}")
+    return {"benchmark": benchmark, "split": "train"}
 
 
 def stage(trackeval_root: Path, lab_data_root: Path, submission: Path, run_name: str, benchmark: str) -> None:
@@ -103,9 +116,17 @@ def run_trackeval(trackeval_root: Path, run_name: str, benchmark: str, split: st
     Raises:
         subprocess.CalledProcessError: Khi TrackEval thoát với mã khác 0.
     """
+    trackeval_script = trackeval_root / "scripts" / "run_mot_challenge.py"
+    compat_code = (
+        "import numpy as np; np.float = float; np.int = int; "
+        "import runpy, sys; script = sys.argv.pop(1); sys.argv[0] = script; "
+        "runpy.run_path(script, run_name='__main__')"
+    )
     cmd = [
         sys.executable,
-        str(trackeval_root / "scripts" / "run_mot_challenge.py"),
+        "-c",
+        compat_code,
+        str(trackeval_script),
         "--GT_FOLDER", str(trackeval_root / "data" / "gt" / "mot_challenge"),
         "--TRACKERS_FOLDER", str(trackeval_root / "data" / "trackers" / "mot_challenge"),
         "--BENCHMARK", benchmark,
